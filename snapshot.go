@@ -11,20 +11,19 @@ import (
 )
 
 const (
-	bucket         = "fil-chain-snapshots-fallback"
+	s3Host         = "https://fil-chain-snapshots-fallback.s3.amazonaws.com/mainnet"
 	snapshotPrefix = "minimal_finality_stateroots"
-	maxAttempts    = 4
 )
 
 var SnapshotCmd = &cli.Command{
 	Name:  "snapshot",
-	Usage: fmt.Sprintf("Get a minimal Filecoin snapshot from the %s bucket", bucket),
+	Usage: fmt.Sprintf("Get a minimal Filecoin snapshot from the %s bucket", s3Host),
 	Flags: []cli.Flag{
 		&cli.IntFlag{
-			Name:    "attempts",
-			Aliases: []string{"a"},
+			Name:    "max-attempts",
+			Aliases: []string{"m"},
 			Usage:   "the max number of attempts to make when finding a snapshot in the bucket",
-			Value:   maxAttempts,
+			Value:   4,
 		},
 	},
 	Action: func(c *cli.Context) error {
@@ -35,9 +34,9 @@ var SnapshotCmd = &cli.Command{
 
 		date := c.Args().Get(0)
 
-		cl := newClient("https://%s.s3.amazonaws.com/mainnet/%s")
+		cl := newClient(s3Host, c.Int("max-attempts"))
 
-		s, err := cl.getSnapshot(date, c.Int("attempts"))
+		s, err := cl.getSnapshot(date, 0)
 		if err != nil {
 			log.Error(err)
 			s.Close()
@@ -49,16 +48,19 @@ var SnapshotCmd = &cli.Command{
 }
 
 type client struct {
-	host string
+	host        string
+	maxAttempts int
 }
 
-func newClient(host string) client {
-	return client{host: host}
+func newClient(host string, maxAttempts int) client {
+	return client{host: host, maxAttempts: maxAttempts}
 }
 
-func (c *client) getSnapshot(date string, attempt int) (fp *os.File, err error) {
-	if attempt >= maxAttempts {
-		return nil, fmt.Errorf("reached max attempts of %d time(s)", maxAttempts)
+func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
+	fmt.Printf("getSnapshot(date: %s, attempt: %d)\n", date, attempt)
+
+	if attempt >= c.maxAttempts {
+		return nil, fmt.Errorf("reached max attempts of %d time(s)", c.maxAttempts)
 	}
 
 	epoch, err := dateToEpoch(date)
@@ -69,11 +71,12 @@ func (c *client) getSnapshot(date string, attempt int) (fp *os.File, err error) 
 	car := fmt.Sprintf("%s_%d_%s.car", snapshotPrefix, epoch, date)
 
 	url := fmt.Sprintf(
-		"%s/%s/%s",
+		"%s/%s",
 		c.host,
-		bucket,
 		car,
 	)
+
+	fmt.Printf("getSnapshot(...): url: %s\n", url)
 
 	resp, err := http.Get(url)
 	if err != nil {

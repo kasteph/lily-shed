@@ -35,8 +35,10 @@ func main() {
 		},
 	}
 
+	app.Setup()
+
 	if err := app.RunContext(ctx, os.Args); err != nil {
-		log.Fatal(err)
+		log.Fatal(err.Error())
 		os.Exit(1)
 	}
 }

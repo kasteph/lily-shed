@@ -17,7 +17,7 @@ func TestGetSnapshot(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := newClient(ts.URL)
+	c := newClient(ts.URL, 4)
 	s, _ := c.getSnapshot("2022-02-28_08-00-00", 0)
 	f, _ := os.OpenFile(s.Name(), os.O_RDONLY, 0755)
 	o, _ := ioutil.ReadAll(f)
