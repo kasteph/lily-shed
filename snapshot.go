@@ -43,6 +43,7 @@ var SnapshotCmd = &cli.Command{
 			os.Exit(1)
 		}
 		s.Close()
+
 		return nil
 	},
 }
