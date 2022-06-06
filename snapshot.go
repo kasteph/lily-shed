@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/schollz/progressbar/v3"
 	"github.com/urfave/cli/v2"
 )
 
@@ -151,7 +152,8 @@ func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
 		file = c.outputPath
 	}
 
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
+	if _, err := io.Copy(io.MultiWriter(file, bar), resp.Body); err != nil {
 		return nil, fmt.Errorf("could not write to file: %s", err)
 	}
 
