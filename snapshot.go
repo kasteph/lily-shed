@@ -5,9 +5,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
-	"github.com/schollz/progressbar/v3"
 	"github.com/urfave/cli/v2"
 )
 
@@ -122,23 +122,19 @@ func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
 
 	fmt.Printf("getSnapshot(...): url: %s\n", url)
 
-	resp, err := http.Get(url)
+	resp, err := http.Head(url)
 	if err != nil {
 		log.Error("error in get request: ", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		log.Warnf("couldn't download: %s_%d_%s", snapshotPrefix, epoch, date)
 		attempt++
 
 		t, _ := time.Parse(layoutISO, date)
 		return c.getSnapshot(t.Add(time.Hour*1).Format(layoutISO), attempt)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("could not download car file: %s", err)
 	}
 
 	var file *os.File
@@ -152,10 +148,64 @@ func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
 		file = c.outputPath
 	}
 
-	bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
-	if _, err := io.Copy(io.MultiWriter(file, bar), resp.Body); err != nil {
-		return nil, fmt.Errorf("could not write to file: %s", err)
+	cl := resp.ContentLength
+	lim := 10
+	chunkLen := cl / int64(lim)
+	if chunkLen == 0 { // otherwise we go in an infinite loop with the offset addition
+		chunkLen = 1
 	}
 
+	var wg sync.WaitGroup
+
+	for offset := int64(0); offset < cl; offset += chunkLen {
+		wg.Add(1)
+
+		offset := offset
+		limit := offset + chunkLen
+		if limit >= cl {
+			limit = cl
+		}
+
+		go func() {
+			client := &http.Client{}
+
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				log.Errorf("goroutine err: %v\n", err)
+			}
+
+			range_header := fmt.Sprintf("bytes=%d-%d", offset, limit)
+			req.Header.Add("Range", range_header)
+
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Errorf("goroutine err: %v\n", err)
+			}
+
+			if resp.StatusCode != http.StatusPartialContent {
+				log.Errorf("server response: %d, expected: %d", resp.StatusCode, http.StatusPartialContent)
+			}
+
+			_, err = io.Copy(&chunkWriter{offset: offset, WriterAt: file}, resp.Body)
+			if err != nil {
+				log.Errorf("could not write to file: %s", err)
+			}
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+
 	return file, nil
+}
+
+type chunkWriter struct {
+	io.WriterAt
+	offset int64
+}
+
+func (c *chunkWriter) Write(p []byte) (n int, err error) {
+	n, err = c.WriteAt(p, c.offset)
+	c.offset += int64(n)
+	return
 }
