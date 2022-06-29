@@ -1,0 +1,151 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: poc-
+spec:
+  entrypoint: partial-repo
+  volumeClaimGC:
+    strategy: OnWorkflowCompletion
+
+  volumeClaimTemplates:
+    - metadata:
+        name: workdir
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 250Gi
+
+  arguments:
+    parameters:
+      - name: from
+      - name: to
+
+  templates:
+    - name: lily-daemon
+      inputs:
+        parameters:
+          - name: to
+      container:
+        # todo: swap for filecoin/lily once filecoin-project/lily#1010
+        # todo: or filecoin-project/lotus#8641 is merged
+        image: &lily stephsamson/lily
+        command: [ sh, -c ]
+        args:
+          - "until lily sync status --output='json' | 
+            jq -e '.Stage == 1 and .Height == {{inputs.parameters.to}}' >& /dev/null`;
+            do echo sleep; sleep 30; done; lily stop"
+        volumeMounts: &workdir
+          - name: workdir
+            mountPath: /mnt/vol
+      sidecars:
+        - name: daemon
+          image: *lily
+          args:
+            - daemon
+            - --log-level=error
+            - --repo=/mnt/vol
+          volumeMounts: *workdir
+      outputs:
+        artifacts:
+          - name: repo
+            path: /mnt/vol
+
+            s3:
+              endpoint: s3.amazonaws.com
+
+              # todo: replace with env var of real values
+              bucket: some-bucket
+              region: eu-west-1
+              key: some/path/to/repo
+              accessKeySecret:
+                name: s3-cred
+                key: accessKey
+              secretKeySecret:
+                name: s3-cred
+                key: secretKey
+
+    - name: partial-repo
+      dag:
+        tasks:
+
+          - name: validate-date-range
+            arguments:
+              parameters:
+                - name: from
+                  value: "{{workflow.parameters.from}}"
+                - name: to
+                  value: "{{workflow.parameters.to}}"
+            inline:
+              inputs:
+                parameters:
+                  - name: to
+                  - name: from
+              container:
+                image: python:latest
+                command: [ python ]
+                args:
+                  - -c
+                  - |
+                    from datetime import datetime as dt;
+                    import  os, sys;
+                    from_ = dt.strptime('{{workflow.parameters.from}}', '%Y-%m-%d_%H-%M-%S');
+                    to = dt.strptime('{{workflow.parameters.to}}', '%Y-%m-%d_%H-%M-%S');
+                    if from_ > to: print('from must be before to'); sys.exit(1)
+
+          - name: get-snapshot
+            dependencies: [validate-date-range]
+            arguments:
+              parameters:
+                - name: from
+                  value: "{{workflow.parameters.from}}"
+            inline:
+              inputs:
+                parameters:
+                  - name: from
+              container:
+                image: &lily-shed stephsamson/lily-shed
+                args:
+                  - "snapshot"
+                  - "-o=/mnt/vol/snapshot.car"
+                  - "{{inputs.parameters.from}}"
+                volumeMounts: *workdir
+
+          - name: lily-init
+            dependencies: [ get-snapshot ]
+            inline:
+              container:
+                image: *lily
+                args:
+                  - "init"
+                  - "--repo=/mnt/vol"
+                  - "--import-snapshot=/mnt/vol/snapshot.car"
+                volumeMounts: *workdir
+              activeDeadlineSeconds: 600 # 10minutes should be more than sufficient
+
+          - name: get-epoch
+            dependencies: [ get-snapshot ]
+            arguments:
+              parameters:
+                - name: to
+                  value: "{{workflow.parameters.to}}"
+            inline:
+              inputs:
+                parameters:
+                  - name: to
+              container:
+                image: *lily-shed
+                args:
+                  - "convert"
+                  - "-s"
+                  - "date"
+                  - "{{inputs.parameters.to}}"
+                volumeMounts: *workdir
+
+          - name: lily-daemon
+            dependencies: [ lily-init, get-epoch ]
+            template: lily-daemon
+            arguments:
+              parameters:
+                - name: to
+                  value: "{{ tasks.get-epoch.outputs.result }}"
