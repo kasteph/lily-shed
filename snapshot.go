@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	logging "github.com/ipfs/go-log/v2"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/urfave/cli/v2"
 )
+
+var log = logging.Logger("lily-shed:snapshot")
 
 const (
 	s3Host         = "https://fil-chain-snapshots-fallback.s3.amazonaws.com/mainnet"
@@ -20,6 +24,12 @@ var SnapshotCmd = &cli.Command{
 	Name:  "snapshot",
 	Usage: fmt.Sprintf("Get a minimal Filecoin snapshot from the %s bucket", s3Host),
 	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:    "print",
+			Aliases: []string{"p"},
+			Usage:   "print the url string of the snapshot to stdout",
+			Value:   false,
+		},
 		&cli.IntFlag{
 			Name:    "max-attempts",
 			Aliases: []string{"m"},
@@ -34,7 +44,7 @@ var SnapshotCmd = &cli.Command{
 	},
 	Action: func(c *cli.Context) error {
 		if c.Args().Len() == 0 {
-			fmt.Printf("must provide a date with the format of YYYY-MM-DD_HH-SS-MM\n")
+			log.Infof("must provide a date with the format of YYYY-MM-DD_HH-SS-MM\n")
 			return nil
 		}
 
@@ -43,13 +53,15 @@ var SnapshotCmd = &cli.Command{
 		opts := []func(*client){
 			withHost(s3Host),
 			withMaxAttempts(c.Int("max-attempts")),
+			withPrint(c.Bool("print")),
 		}
 
 		o := c.String("output-path")
 		if o != "" {
 			p, err := os.Create(o)
 			if err != nil {
-				return fmt.Errorf("could not create file: %s", err)
+				log.Errorf("could not create file: %s", err)
+				return err
 			}
 			opts = append(opts, withOutputPath(p))
 		}
@@ -69,9 +81,10 @@ var SnapshotCmd = &cli.Command{
 }
 
 type client struct {
-	host        string
-	maxAttempts int
-	outputPath  *os.File
+	host          string
+	maxAttempts   int
+	outputPath    *os.File
+	printToStdout bool
 }
 
 func newClient(opts ...func(*client)) *client {
@@ -100,16 +113,23 @@ func withOutputPath(outputPath *os.File) func(*client) {
 	}
 }
 
-func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
-	fmt.Printf("getSnapshot(date: %s, attempt: %d)\n", date, attempt)
+func withPrint(p bool) func(*client) {
+	return func(c *client) {
+		c.printToStdout = p
+	}
+}
 
+func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
+	log.Infof("getSnapshot(date: %s, attempt: %d)\n", date, attempt)
 	if attempt >= c.maxAttempts {
-		return nil, fmt.Errorf("reached max attempts of %d time(s)", c.maxAttempts)
+		log.Errorf("reached max attempts of %d time(s)", c.maxAttempts)
+		return nil, errors.New("attempt >= maxAttempts")
 	}
 
 	epoch, err := dateToEpoch(date)
 	if err != nil {
-		return nil, fmt.Errorf("could not convert date: %s", err)
+		log.Errorf("could not convert date: %s", err)
+		return nil, err
 	}
 
 	car := fmt.Sprintf("%s_%d_%s.car", snapshotPrefix, epoch, date)
@@ -120,7 +140,7 @@ func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
 		car,
 	)
 
-	fmt.Printf("getSnapshot(...): url: %s\n", url)
+	log.Infof("getSnapshot(...): url: %s\n", url)
 
 	resp, err := http.Head(url)
 	if err != nil {
@@ -137,12 +157,18 @@ func (c *client) getSnapshot(date string, attempt int) (*os.File, error) {
 		return c.getSnapshot(t.Add(time.Hour*1).Format(layoutISO), attempt)
 	}
 
+	if c.printToStdout {
+		fmt.Print(url)
+		return nil, nil
+	}
+
 	var file *os.File
 	if c.outputPath == nil {
 		var err error
 		file, err = os.Create(car)
 		if err != nil {
-			return nil, fmt.Errorf("could not create file: %s", err)
+			log.Errorf("could not create file: %s", err)
+			return nil, err
 		}
 	} else {
 		file = c.outputPath

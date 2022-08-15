@@ -8,9 +8,14 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var log = logging.Logger("lily-shed")
+var glog = logging.Logger("lily-shed")
 
 func main() {
+	err := logging.SetLogLevel("lily-shed:snapshot", "info")
+	if err != nil {
+		glog.Errorf(err.Error())
+	}
+
 	ctx := context.Background()
 
 	app := &cli.App{
@@ -23,7 +28,7 @@ func main() {
 	}
 
 	if err := app.RunContext(ctx, os.Args); err != nil {
-		log.Fatal(err.Error())
+		glog.Fatal(err.Error())
 		os.Exit(1)
 	}
 }
