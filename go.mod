@@ -5,7 +5,7 @@ go 1.17
 require (
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/stretchr/testify v1.8.0
-	github.com/urfave/cli/v2 v2.11.2
+	github.com/urfave/cli/v2 v2.20.2
 )
 
 require (
